@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: FlashGate Dashboards
+    orgId: 1
+    folder: FlashGate
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    options:
+      path: /etc/grafana/provisioning/dashboards/json

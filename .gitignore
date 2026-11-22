@@ -5,3 +5,7 @@ bin/
 *.out
 coverage.html
 .DS_Store
+
+# Internal AI & workflow tracker (local only)
+AGENTS.md
+docs/progress.md
