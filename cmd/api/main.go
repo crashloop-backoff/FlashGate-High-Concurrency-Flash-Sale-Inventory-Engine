@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -17,6 +19,8 @@ import (
 
 	"github.com/crashloop-backoff/FlashGate-High-Concurrency-Flash-Sale-Inventory-Engine/internal/config"
 	"github.com/crashloop-backoff/FlashGate-High-Concurrency-Flash-Sale-Inventory-Engine/internal/observability"
+	"github.com/crashloop-backoff/FlashGate-High-Concurrency-Flash-Sale-Inventory-Engine/internal/repository/postgres"
+	"github.com/crashloop-backoff/FlashGate-High-Concurrency-Flash-Sale-Inventory-Engine/internal/service"
 	httptransport "github.com/crashloop-backoff/FlashGate-High-Concurrency-Flash-Sale-Inventory-Engine/internal/transport/http"
 )
 
@@ -31,6 +35,10 @@ func run() error {
 	cfg, err := config.Load()
 	if err != nil {
 		return err
+	}
+
+	if cfg.StorageMode != "postgres" {
+		return fmt.Errorf("unsupported STORAGE_MODE %q: only 'postgres' is supported in baseline phase", cfg.StorageMode)
 	}
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
@@ -79,7 +87,32 @@ func run() error {
 		EnableOpenMetrics: true,
 	})
 
-	router := httptransport.NewRouter(logger, pool, metrics, metricsHandler)
+	eventRepo := postgres.NewEventRepository(pool)
+	orderRepo := postgres.NewOrderRepository(pool)
+
+	eventSvc := service.NewEventService(eventRepo)
+	orderSvc := service.NewOrderService(
+		orderRepo,
+		time.Duration(cfg.ReservationTTLSeconds)*time.Second,
+		metrics,
+	)
+	sweeper := service.NewSweeper(
+		orderRepo,
+		time.Duration(cfg.SweeperIntervalSeconds)*time.Second,
+		100,
+		metrics,
+		logger,
+	)
+
+	sweeperCtx, cancelSweeper := context.WithCancel(ctx)
+	var sweeperWG sync.WaitGroup
+	sweeperWG.Add(1)
+	go func() {
+		defer sweeperWG.Done()
+		sweeper.Run(sweeperCtx)
+	}()
+
+	router := httptransport.NewRouter(logger, pool, metrics, metricsHandler, eventSvc, orderSvc)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.AppPort,
@@ -105,10 +138,15 @@ func run() error {
 
 	select {
 	case serveErr := <-errCh:
+		cancelSweeper()
+		sweeperWG.Wait()
 		return serveErr
 	case <-ctx.Done():
 		logger.Info("shutdown signal received, draining connections")
 	}
+
+	cancelSweeper()
+	sweeperWG.Wait()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

@@ -1,0 +1,364 @@
+openapi: 3.0.3
+info:
+  title: FlashGate API
+  version: 1.0.0
+  description: High-concurrency flash-sale and inventory reservation backend.
+
+servers:
+  - url: http://localhost:8080
+    description: Local Docker Compose
+
+paths:
+  /health:
+    get:
+      summary: Service health check
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+        "503":
+          description: Dependency unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+  /metrics:
+    get:
+      summary: Prometheus metrics endpoint
+      responses:
+        "200":
+          description: Prometheus text exposition format
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /v1/events:
+    post:
+      summary: Create a flash-sale event
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateEventRequest"
+      responses:
+        "201":
+          description: Event created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Event"
+        "400":
+          description: Invalid input (INVALID_INPUT)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v1/events/{event_id}:
+    get:
+      summary: Get event details and remaining stock
+      parameters:
+        - name: event_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Event found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Event"
+        "400":
+          description: Invalid event_id format (INVALID_INPUT)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Event not found (NOT_FOUND)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v1/orders:
+    post:
+      summary: Atomically reserve tickets for an event
+      parameters:
+        - name: X-User-ID
+          in: header
+          required: true
+          schema:
+            type: string
+            minLength: 1
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateOrderRequest"
+      responses:
+        "201":
+          description: Reservation created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+        "200":
+          description: Idempotent replay returning existing reservation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+        "400":
+          description: Invalid input or quantity out of 1..5 range (INVALID_INPUT, INVALID_QUANTITY)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Event not found (NOT_FOUND)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Business conflict (OUT_OF_STOCK, EVENT_NOT_ACTIVE, IDEMPOTENCY_CONFLICT)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v1/orders/{order_id}/pay:
+    post:
+      summary: Confirm payment for a RESERVED order
+      parameters:
+        - name: order_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Order marked as PAID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+        "400":
+          description: Invalid order_id format (INVALID_INPUT)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Order not found (NOT_FOUND)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Order expired or invalid transition (ORDER_EXPIRED, INVALID_STATE_TRANSITION)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v1/orders/{order_id}/cancel:
+    post:
+      summary: Cancel a RESERVED order and restore stock
+      parameters:
+        - name: order_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Order marked as CANCELLED
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+        "400":
+          description: Invalid order_id format (INVALID_INPUT)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Order not found (NOT_FOUND)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Order not in RESERVED state (INVALID_STATE_TRANSITION)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+components:
+  schemas:
+    HealthResponse:
+      type: object
+      required: [status, postgres, redis]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+        postgres:
+          type: string
+          enum: [up, down]
+        redis:
+          type: string
+          enum: [up, down, disabled]
+
+    CreateEventRequest:
+      type: object
+      required: [name, total_stock, starts_at, ends_at]
+      properties:
+        name:
+          type: string
+          minLength: 1
+        total_stock:
+          type: integer
+          minimum: 1
+        starts_at:
+          type: string
+          format: date-time
+        ends_at:
+          type: string
+          format: date-time
+
+    Event:
+      type: object
+      required:
+        - id
+        - name
+        - total_stock
+        - available_stock
+        - starts_at
+        - ends_at
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        total_stock:
+          type: integer
+        available_stock:
+          type: integer
+        starts_at:
+          type: string
+          format: date-time
+        ends_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    CreateOrderRequest:
+      type: object
+      required: [event_id, quantity]
+      properties:
+        event_id:
+          type: string
+          format: uuid
+        quantity:
+          type: integer
+          minimum: 1
+          maximum: 5
+
+    Order:
+      type: object
+      required:
+        - id
+        - event_id
+        - user_id
+        - quantity
+        - status
+        - idempotency_key
+        - expires_at
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        event_id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+        quantity:
+          type: integer
+          minimum: 1
+          maximum: 5
+        status:
+          type: string
+          enum: [RESERVED, PAID, CANCELLED, EXPIRED]
+        idempotency_key:
+          type: string
+          maxLength: 128
+        expires_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum:
+                - INVALID_INPUT
+                - INVALID_QUANTITY
+                - NOT_FOUND
+                - OUT_OF_STOCK
+                - EVENT_NOT_ACTIVE
+                - ORDER_EXPIRED
+                - INVALID_STATE_TRANSITION
+                - IDEMPOTENCY_CONFLICT
+                - INTERNAL_ERROR
+                - SERVICE_UNAVAILABLE
+            message:
+              type: string
+            request_id:
+              type: string

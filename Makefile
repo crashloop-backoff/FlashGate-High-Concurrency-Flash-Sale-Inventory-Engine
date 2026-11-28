@@ -24,7 +24,7 @@ lint:
 	@if command -v golangci-lint >/dev/null 2>&1; then \
 		golangci-lint run; \
 	else \
-		docker run --rm -v "$(CURDIR):/app" -w /app $(GOLANGCI_LINT_IMAGE) golangci-lint run; \
+		docker run --rm -v "$(CURDIR):/app:z" -w /app $(GOLANGCI_LINT_IMAGE) golangci-lint run; \
 	fi
 
 migrate:

@@ -8,14 +8,16 @@ import (
 // DurationBuckets defines the histogram buckets for HTTP request latency in seconds.
 var DurationBuckets = []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5}
 
-// Metrics holds all HTTP RED Prometheus metrics for FlashGate.
+// Metrics holds all HTTP RED and domain Prometheus metrics for FlashGate.
 type Metrics struct {
 	HTTPRequestsTotal   *prometheus.CounterVec
 	HTTPRequestDuration *prometheus.HistogramVec
 	HTTPInflight        prometheus.Gauge
+	ReservationsTotal   *prometheus.CounterVec
+	SweeperExpiredTotal prometheus.Counter
 }
 
-// NewMetrics creates and registers HTTP RED metrics on the provided Prometheus registerer.
+// NewMetrics creates and registers HTTP RED and domain metrics on the provided Prometheus registerer.
 func NewMetrics(reg prometheus.Registerer) (*Metrics, error) {
 	m := &Metrics{
 		HTTPRequestsTotal: prometheus.NewCounterVec(
@@ -39,12 +41,27 @@ func NewMetrics(reg prometheus.Registerer) (*Metrics, error) {
 				Help: "Number of HTTP requests currently being processed.",
 			},
 		),
+		ReservationsTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "flashgate_reservations_total",
+				Help: "Total number of ticket reservation attempts by result.",
+			},
+			[]string{"result"},
+		),
+		SweeperExpiredTotal: prometheus.NewCounter(
+			prometheus.CounterOpts{
+				Name: "flashgate_sweeper_expired_total",
+				Help: "Total number of RESERVED orders expired and restored by the background sweeper.",
+			},
+		),
 	}
 
 	for _, c := range []prometheus.Collector{
 		m.HTTPRequestsTotal,
 		m.HTTPRequestDuration,
 		m.HTTPInflight,
+		m.ReservationsTotal,
+		m.SweeperExpiredTotal,
 	} {
 		if err := reg.Register(c); err != nil {
 			return nil, err
@@ -52,6 +69,20 @@ func NewMetrics(reg prometheus.Registerer) (*Metrics, error) {
 	}
 
 	return m, nil
+}
+
+// RecordReservation increments flashgate_reservations_total for the given result label.
+func (m *Metrics) RecordReservation(result string) {
+	if m != nil && m.ReservationsTotal != nil {
+		m.ReservationsTotal.WithLabelValues(result).Inc()
+	}
+}
+
+// AddSweeperExpired increments flashgate_sweeper_expired_total by count.
+func (m *Metrics) AddSweeperExpired(count int64) {
+	if m != nil && m.SweeperExpiredTotal != nil && count > 0 {
+		m.SweeperExpiredTotal.Add(float64(count))
+	}
 }
 
 // PoolStatProvider abstracts pgxpool.Pool.Stat() for testability.

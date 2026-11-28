@@ -13,11 +13,26 @@ func NewRouter(
 	pinger Pinger,
 	metrics *observability.Metrics,
 	metricsHandler http.Handler,
+	eventSvc EventService,
+	orderSvc OrderService,
 ) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /health", NewHealthHandler(pinger, logger))
 	if metricsHandler != nil {
 		mux.Handle("GET /metrics", metricsHandler)
+	}
+
+	if eventSvc != nil {
+		eventHandler := NewEventHandler(eventSvc, logger)
+		mux.HandleFunc("POST /v1/events", eventHandler.Create)
+		mux.HandleFunc("GET /v1/events/{event_id}", eventHandler.GetByID)
+	}
+
+	if orderSvc != nil {
+		orderHandler := NewOrderHandler(orderSvc, logger)
+		mux.HandleFunc("POST /v1/orders", orderHandler.Reserve)
+		mux.HandleFunc("POST /v1/orders/{order_id}/pay", orderHandler.Pay)
+		mux.HandleFunc("POST /v1/orders/{order_id}/cancel", orderHandler.Cancel)
 	}
 
 	var handler http.Handler = mux
